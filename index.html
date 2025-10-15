@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Real-Time Object Detection</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/coco-ssd"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+        #video-container {
+            position: relative;
+            display: inline-block;
+        }
+        #video, #canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            border-radius: 0.5rem;
+        }
+        #video {
+            z-index: 1;
+        }
+        #canvas {
+            z-index: 10;
+        }
+        .loader {
+            border: 8px solid #f3f3f3;
+            border-top: 8px solid #3498db;
+            border-radius: 50%;
+            width: 60px;
+            height: 60px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100 text-gray-800 flex flex-col items-center justify-center min-h-screen p-4">
+
+    <div class="max-w-4xl w-full bg-white rounded-lg shadow-xl p-6 md:p-8">
+        <div class="text-center mb-6">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900">Real-Time Object Detection</h1>
+            <p class="text-gray-600 mt-2">Using TensorFlow.js and the COCO-SSD Model</p>
+        </div>
+
+        <!-- Loading Indicator -->
+        <div id="loading" class="flex flex-col items-center justify-center h-96">
+            <div class="loader"></div>
+            <p id="loading-message" class="mt-4 text-lg text-gray-600">Loading Model & Starting Webcam...</p>
+        </div>
+
+        <!-- Main Content: Video and Detection Info -->
+        <div id="main-content" class="hidden">
+            <div id="video-container" class="w-full max-w-2xl mx-auto mb-6 bg-black rounded-lg shadow-md overflow-hidden" style="padding-bottom: 75%;"> <!-- 4:3 Aspect Ratio -->
+                <video id="video" autoplay playsinline muted class="w-full h-full"></video>
+                <canvas id="canvas" class="w-full h-full"></canvas>
+            </div>
+
+            <div class="bg-gray-50 rounded-lg p-4 text-center">
+                <h2 class="text-xl font-semibold mb-2">Detection Results</h2>
+                <p class="text-lg">
+                    <span class="font-bold text-blue-600" id="object-count">0</span>
+                    <span id="object-count-label">objects detected</span>
+                </p>
+            </div>
+        </div>
+
+        <!-- Error Message Display -->
+        <div id="error-message" class="hidden mt-4 bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded-lg relative text-center">
+            <strong class="font-bold">Error:</strong>
+            <span class="block sm:inline" id="error-text"></span>
+        </div>
+    </div>
+
+    <footer class="text-center text-gray-500 mt-8">
+        <p>&copy; 2024 - Built with TensorFlow.js</p>
+    </footer>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('canvas');
+        const objectCountEl = document.getElementById('object-count');
+        const objectCountLabelEl = document.getElementById('object-count-label');
+        const loadingEl = document.getElementById('loading');
+        const loadingMessageEl = document.getElementById('loading-message');
+        const mainContentEl = document.getElementById('main-content');
+        const errorEl = document.getElementById('error-message');
+        const errorTextEl = document.getElementById('error-text');
+        const videoContainer = document.getElementById('video-container');
+
+        let model = null;
+        let animationFrameId = null;
+
+        // Function to show errors
+        function showError(message) {
+            errorTextEl.textContent = message;
+            errorEl.classList.remove('hidden');
+            loadingEl.classList.add('hidden');
+            mainContentEl.classList.add('hidden');
+        }
+
+        async function setupWebcam() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ 
+                    video: { facingMode: 'environment' } // Prefer back camera
+                });
+                video.srcObject = stream;
+                return new Promise((resolve) => {
+                    video.onloadedmetadata = () => {
+                        resolve(video);
+                    };
+                });
+            } catch (err) {
+                console.error("Error accessing webcam: ", err);
+                showError("Could not access the webcam. Please ensure it's enabled and permissions are granted.");
+                return null;
+            }
+        }
+        
+        // Main function to run the application
+        async function run() {
+            try {
+                // 1. Load the COCO-SSD model
+                loadingMessageEl.textContent = 'Loading COCO-SSD model...';
+                model = await cocoSsd.load();
+                console.log('Model loaded.');
+
+                // 2. Setup webcam
+                loadingMessageEl.textContent = 'Starting webcam...';
+                const webcam = await setupWebcam();
+                if (!webcam) return; // Stop if webcam setup failed
+
+                // 3. Set canvas and video dimensions
+                const aspectRatio = video.videoWidth / video.videoHeight;
+                const containerWidth = videoContainer.offsetWidth;
+                const containerHeight = containerWidth / aspectRatio;
+                
+                videoContainer.style.paddingBottom = `${(1 / aspectRatio) * 100}%`;
+                
+                canvas.width = video.videoWidth;
+                canvas.height = video.videoHeight;
+
+                // 4. Show content and hide loader
+                loadingEl.classList.add('hidden');
+                mainContentEl.classList.remove('hidden');
+
+                // 5. Start the detection loop
+                detectObjects();
+
+            } catch (error) {
+                console.error("Initialization failed:", error);
+                showError("Failed to initialize the application. Please refresh the page.");
+            }
+        }
+        
+        // Function to detect objects in the video feed
+        async function detectObjects() {
+            if (!model || !video.srcObject) return;
+
+            // Get predictions
+            const predictions = await model.detect(video);
+            
+            // Draw the results on the canvas
+            drawBoundingBoxes(predictions);
+            
+            // Update the object count
+            updateObjectCount(predictions.length);
+
+            // Request the next frame
+            animationFrameId = requestAnimationFrame(detectObjects);
+        }
+
+        // Function to draw bounding boxes and labels
+        function drawBoundingBoxes(predictions) {
+            const ctx = canvas.getContext('2d');
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            predictions.forEach(prediction => {
+                const [x, y, width, height] = prediction.bbox;
+                const text = `${prediction.class} (${Math.round(prediction.score * 100)}%)`;
+                
+                // Set styling
+                ctx.strokeStyle = '#00FFFF';
+                ctx.lineWidth = 2;
+                ctx.fillStyle = '#00FFFF';
+                ctx.font = '16px Inter';
+                
+                // Draw the bounding box
+                ctx.beginPath();
+                ctx.rect(x, y, width, height);
+                ctx.stroke();
+
+                // Draw the label background
+                const textWidth = ctx.measureText(text).width;
+                ctx.fillRect(x, y, textWidth + 8, 20);
+
+                // Draw the label text
+                ctx.fillStyle = '#000000';
+                ctx.fillText(text, x + 4, y + 16);
+            });
+        }
+        
+        function updateObjectCount(count) {
+            objectCountEl.textContent = count;
+            objectCountLabelEl.textContent = count === 1 ? ' object detected' : ' objects detected';
+        }
+
+        // Handle window resize
+        window.addEventListener('resize', () => {
+             // We can re-calculate dimensions if needed, but for now this setup is quite robust
+             // due to using relative units for the container.
+        });
+
+        // Start the application
+        run();
+        
+        // Cleanup on page unload
+        window.addEventListener('beforeunload', () => {
+            if (animationFrameId) {
+                cancelAnimationFrame(animationFrameId);
+            }
+            if (video.srcObject) {
+                video.srcObject.getTracks().forEach(track => track.stop());
+            }
+        });
+
+    </script>
+</body>
+</html>
